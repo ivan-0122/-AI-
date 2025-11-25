@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="台股 AI 戰情室 V8.0 (大數據版)", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="台股 AI 戰情室 V8.1", layout="wide", page_icon="🦅")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -113,7 +113,6 @@ def get_stock_name(ticker):
     return FLAT_STOCK_DB.get(ticker, ticker.replace(".TW", ""))
 
 def get_name_online(ticker):
-    """搜尋用"""
     name = FLAT_STOCK_DB.get(ticker)
     if name: return name
     try:
@@ -184,16 +183,34 @@ def analyze_stock(ticker, strict_mode=False):
         }
     except: return None
 
-# --- 繪圖 (儀表板 & 圖表) ---
+# --- 優化後的繪圖 (儀表板) ---
 def plot_gauge(value, title, thresholds=[30, 70]):
     fig = go.Figure(go.Indicator(
-        mode="gauge+number", value=value, title={'text': title, 'font': {'size': 14}},
-        gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "black", 'thickness': 0.5},
-               'steps': [{'range': [0, thresholds[0]], 'color': "#ffcccb"},
-                         {'range': [thresholds[0], thresholds[1]], 'color': "#fff3cd"},
-                         {'range': [thresholds[1], 100], 'color': "#ccffcc"}],
-               'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': value}}))
-    fig.update_layout(height=200, margin=dict(l=30, r=30, t=30, b=10))
+        mode="gauge+number",
+        value=value,
+        title={'text': title, 'font': {'size': 18, 'color': '#333'}},
+        number={'font': {'size': 36}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#666"},
+            'bar': {'color': "#222", 'thickness': 0.6},
+            'bgcolor': "white",
+            'borderwidth': 1,
+            'bordercolor': "#ddd",
+            'steps': [
+                {'range': [0, thresholds[0]], 'color': "#ffcdd2"},
+                {'range': [thresholds[0], thresholds[1]], 'color': "#fff9c4"},
+                {'range': [thresholds[1], 100], 'color': "#c8e6c9"}
+            ],
+            'threshold': {'line': {'color': "#d32f2f", 'width': 4}, 'thickness': 0.75, 'value': value}
+        }
+    ))
+    # 關鍵修正: 增加高度與邊界
+    fig.update_layout(
+        height=250, 
+        margin=dict(l=30, r=30, t=50, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        font={'family': "Arial"}
+    )
     return fig
 
 def plot_chip_chart(data):
@@ -225,8 +242,8 @@ selected_sectors = st.sidebar.multiselect("選擇板塊", list(STOCK_DB.keys()),
 strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False)
 include_forecast_scan = st.sidebar.checkbox("載入財報預估 (ETF無此項)", value=False, help="勾選會大幅增加掃描時間，建議只在掃描少量股票時開啟。")
 
-st.title("🦅 台股 AI 戰情室 V8.0 (大數據版)")
-st.caption("目前資料庫涵蓋：上市櫃熱門股約 200 檔 + 規模前 30 大 ETF。")
+st.title("🦅 台股 AI 戰情室 V8.1")
+st.caption("包含：上市櫃熱門股約 200 檔 + 規模前 30 大 ETF。")
 
 if 'scan_result' not in st.session_state: st.session_state.scan_result = None
 
@@ -242,12 +259,12 @@ if st.sidebar.button("🚀 啟動掃描", type="primary"):
         status.text(f"({i+1}/{total}) 分析中: {get_stock_name(t)}...")
         d = analyze_stock(t, strict_mode)
         if d:
-            if include_forecast_scan and "ETF" not in get_stock_name(t) and "00" not in t[:2]: # 排除ETF抓財報
-                f_eps, target = get_forecast_data(t)
+            if include_forecast_scan and "ETF" not in get_stock_name(t) and "00" not in t[:2]:
+                f_eps, target_price = get_forecast_data(t)
                 d['預估EPS'] = round(f_eps, 2) if f_eps else "-"
-                d['目標價'] = target if target else "-"
-                if isinstance(target, (int, float)) and target > 0:
-                    upside = (target - d['現價']) / d['現價'] * 100
+                d['目標價'] = target_price if target_price else "-"
+                if isinstance(target_price, (int, float)) and target_price > 0:
+                    upside = (target_price - d['現價']) / d['現價'] * 100
                     d['潛在空間%'] = round(upside, 1)
                 else: d['潛在空間%'] = "-"
             else: d['預估EPS']="-"; d['目標價']="-"; d['潛在空間%']="-"
@@ -269,7 +286,7 @@ with tab1:
             elif "偏多" in action: return ['background-color: #fff3e0; color: #ef6c00']*len(row)
             return ['background-color: #f1f8e9; color: #33691e']*len(row)
         st.dataframe(df.drop(columns=['History', '訊號']).style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "MFI"]), use_container_width=True, height=600)
-    else: st.info("👈 請在側邊欄選擇板塊並點擊「啟動掃描」。(若選取全部類股，掃描可能需 2-3 分鐘)")
+    else: st.info("👈 請在側邊欄選擇板塊並點擊「啟動掃描」。")
 
 with tab2:
     c_search, c_or, c_sel = st.columns([3, 0.5, 3])
@@ -300,10 +317,12 @@ with tab2:
                 st.markdown("---")
                 st.subheader(f"📊 {data['名稱']} ({target}) 籌碼戰情")
                 
-                g1, g2, g3 = st.columns(3)
-                with g1: st.plotly_chart(plot_gauge(data['總分'], "AI 綜合評分", [40, 70]), use_container_width=True)
-                with g2: st.plotly_chart(plot_gauge(data['RSI'], "RSI 動能", [30, 70]), use_container_width=True)
-                with g3: st.plotly_chart(plot_gauge(data['MFI'], "MFI 資金流", [20, 80]), use_container_width=True)
+                # --- 儀表板修正區域 ---
+                with st.container():
+                    g1, g2, g3 = st.columns(3)
+                    with g1: st.plotly_chart(plot_gauge(data['總分'], "AI 綜合評分", [40, 70]), use_container_width=True)
+                    with g2: st.plotly_chart(plot_gauge(data['RSI'], "RSI 動能", [30, 70]), use_container_width=True)
+                    with g3: st.plotly_chart(plot_gauge(data['MFI'], "MFI 資金流", [20, 80]), use_container_width=True)
 
                 ct, cc = st.columns([1, 2])
                 with ct:
