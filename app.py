@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="台股 AI 戰情室 V16.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="台股 AI 戰情室 V17.0", layout="wide", page_icon="🦅")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -24,9 +24,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 資料庫 ---
+# --- 資料庫 (已移除 ETF) ---
 STOCK_DB = {
-    "🔥 熱門 ETF": {"0050.TW": "元大台灣50", "0056.TW": "元大高股息", "00878.TW": "國泰永續高股息", "00929.TW": "復華台灣科技優息", "00919.TW": "群益台灣精選高息", "00940.TW": "元大台灣價值高息", "006208.TW": "富邦台50", "00713.TW": "元大台灣高息低波", "00679B.TW": "元大美債20年", "00687B.TW": "國泰20年美債", "00939.TW": "統一台灣高息動能", "00941.TW": "中信上游半導體"},
     "💻 半導體權值": {"2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2303.TW": "聯電", "2308.TW": "台達電", "3711.TW": "日月光", "2379.TW": "瑞昱", "3034.TW": "聯詠", "3661.TW": "世芯-KY", "3443.TW": "創意", "6669.TW": "緯穎", "3035.TW": "智原", "3529.TW": "力旺", "5274.TW": "信驊", "3231.TW": "緯創", "2382.TW": "廣達", "2357.TW": "華碩", "2356.TW": "英業達", "2376.TW": "技嘉", "2324.TW": "仁寶"},
     "⚡ 重電/綠能": {"1519.TW": "華城", "1513.TW": "中興電", "1503.TW": "士電", "1504.TW": "東元", "1514.TW": "亞力", "1609.TW": "大亞", "1605.TW": "華新", "1618.TW": "合機", "1616.TW": "億泰", "6806.TW": "森崴能源", "9958.TW": "世紀鋼", "3708.TW": "上緯投控", "6443.TW": "元晶"},
     "🖥️ PCB/載板": {"3037.TW": "欣興", "8046.TW": "南電", "3189.TW": "景碩", "2368.TW": "金像電", "3044.TW": "健鼎", "6274.TW": "台燿", "2383.TW": "台光電", "6213.TW": "聯茂", "4958.TW": "臻鼎-KY", "2313.TW": "華通", "5469.TW": "瀚宇博", "8358.TW": "金居", "6269.TW": "台郡", "2355.TW": "敬鵬"},
@@ -82,8 +81,8 @@ def get_advanced_fundamentals(ticker):
         }
     except: return None
 
-# --- 4, 7, 11, 12. 核心分析 (新增 bypass_filter 參數) ---
-def analyze_stock_strategy(ticker, strategy_mode, bypass_filter=False):
+# --- 核心策略引擎 (V17.0 含嚴格模式) ---
+def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=False):
     try:
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
         if len(df) < 60: return None
@@ -104,17 +103,22 @@ def analyze_stock_strategy(ticker, strategy_mode, bypass_filter=False):
         latest = df.iloc[-1]; price = float(latest['Close'])
         vol_ratio = float(latest['Volume']/latest['Vol_MA5']) if latest['Vol_MA5']>0 else 0
         bias_20 = (price - latest['MA20'])/latest['MA20']*100
-        big_player_cost = float((df['Open'].iloc[-20:] + df['Close'].iloc[-20:]).mean()/2) # 簡化計算加快速度
+        big_player_cost = float((df['Open'].iloc[-20:] + df['Close'].iloc[-20:]).mean()/2)
 
         score = 0; signals = []; is_selected = False; bb_status = "一般"
 
-        # 策略邏輯
+        # --- 策略邏輯 ---
         if strategy_mode == "🚀 短線噴射 (飆股)":
             if vol_ratio > 1.5: score+=25; signals.append("爆量")
             if price > latest['BB_High']: score+=25; signals.append("布林突破")
             if latest['BB_Width'] < 0.15: score+=10; signals.append("壓縮")
             if latest['MACD_Hist']>0 and latest['MACD_Hist']>df['MACD_Hist'].iloc[-2]: score+=20; signals.append("MACD翻紅")
-            if (price > latest['BB_High'] or vol_ratio > 1.5) and score >= 60: is_selected = True
+            
+            # 嚴格模式門檻
+            min_score = 75 if strict_mode else 60
+            min_vol = 2.0 if strict_mode else 1.5
+            
+            if (price > latest['BB_High'] or vol_ratio > min_vol) and score >= min_score: is_selected = True
             if price > latest['BB_High']: bb_status = "🚀 突破噴出"
 
         elif strategy_mode == "🌊 波段成長 (趨勢)":
@@ -122,19 +126,24 @@ def analyze_stock_strategy(ticker, strategy_mode, bypass_filter=False):
             if latest['OBV']>latest['OBV_MA10']: score+=20; signals.append("籌碼吸納")
             if latest['MACD']>latest['MACD_Signal']: score+=20; signals.append("MACD金叉")
             if price > latest['MA20']: score+=10
-            if latest['MA5']>latest['MA20'] and score>=60: is_selected = True
+            
+            # 嚴格模式門檻
+            min_score = 75 if strict_mode else 60
+            if latest['MA5']>latest['MA20'] and score >= min_score: is_selected = True
 
         elif strategy_mode == "💎 長線價值 (低接)":
             if abs(price-latest['MA20'])/latest['MA20']<0.03: score+=30; signals.append("回測月線")
             if 40<=latest['RSI']<=60: score+=20
             if bias_20 < -5: score+=20; signals.append("負乖離超跌")
-            if price > latest['MA60'] and latest['RSI'] < 70 and score >= 50: is_selected = True
+            
+            # 嚴格模式門檻
+            min_score = 65 if strict_mode else 50
+            if price > latest['MA60'] and latest['RSI'] < 70 and score >= min_score: is_selected = True
 
         action = "觀察"
         if score >= 80: action = "🔥 強力買進"
         elif score >= 60: action = "✅ 建議佈局"
         
-        # 關鍵修改：如果是 bypass 模式 (Tab 2 搜尋)，就算沒入選也回傳資料
         if is_selected or bypass_filter:
             status_note = "" if is_selected else "⚠️ 未入選 (不符策略)"
             return {
@@ -177,37 +186,45 @@ def plot_chart(data):
     return fig
 
 # --- 主程式介面 ---
-st.sidebar.header("🦅 V16.0 自由搜尋版")
+st.sidebar.header("🦅 V17.0 純個股戰情室")
 strategy_mode = st.sidebar.radio("🎯 選擇策略", ("🚀 短線噴射 (飆股)", "🌊 波段成長 (趨勢)", "💎 長線價值 (低接)"), index=1)
-selected_sectors = st.sidebar.multiselect("板塊篩選", list(STOCK_DB.keys()), default=["🔥 熱門 ETF", "💻 半導體權值"])
 
-st.title("🦅 台股 AI 戰情室 V16.0")
+# V17.0: 預設選取所有股票 (排除 ETF)
+all_sectors = list(STOCK_DB.keys())
+selected_sectors = st.sidebar.multiselect("板塊篩選", all_sectors, default=all_sectors)
+
+# V17.0: 嚴格模式回歸
+strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False, help="勾選後，會提高入選的分數門檻，過濾掉雜訊。")
+
+st.title("🦅 台股 AI 戰情室 V17.0")
 rate, delta = get_macro_data()
 st.metric("🇺🇸 美國 10 年期公債殖利率", f"{rate:.2f}%", f"{delta:.2f}", delta_color="inverse")
 
-if 'scan_result_v16' not in st.session_state: st.session_state.scan_result_v16 = None
+if 'scan_result_v17' not in st.session_state: st.session_state.scan_result_v17 = None
 
-if st.sidebar.button("🚀 執行掃描 (僅列出符合策略股)", type="primary"):
+if st.sidebar.button("🚀 執行全市場掃描", type="primary"):
     scan_list = []
     for sector in selected_sectors: scan_list.extend(list(STOCK_DB[sector].keys()))
     total = len(scan_list); bar = st.progress(0); res = []
-    st.toast(f"正在掃描 {total} 檔標的...", icon="🦅")
+    st.toast(f"掃描 {total} 檔個股中...", icon="🦅")
+    
     for i, t in enumerate(scan_list):
-        d = analyze_stock_strategy(t, strategy_mode, bypass_filter=False) # 掃描模式：嚴格過濾
+        d = analyze_stock_strategy(t, strategy_mode, strict_mode, bypass_filter=False)
         if d: res.append(d)
         bar.progress((i+1)/total)
     bar.empty()
+    
     if res:
-        st.session_state.scan_result_v16 = pd.DataFrame(res).sort_values(by="總分", ascending=False)
-        st.success(f"找到 {len(res)} 檔符合【{strategy_mode}】的標的。")
-    else: st.warning("無符合標的，請嘗試其他策略或手動搜尋。")
+        st.session_state.scan_result_v17 = pd.DataFrame(res).sort_values(by="總分", ascending=False)
+        st.success(f"掃描完成！找到 {len(res)} 檔符合策略個股。")
+    else: st.warning("無符合標的，請嘗試關閉嚴格模式。")
 
 # --- Tabs ---
-tab1, tab2 = st.tabs(["📋 篩選結果", "🔍 12大指標深度透視 (任意搜尋)"])
+tab1, tab2 = st.tabs(["📋 篩選結果", "🔍 12大指標深度透視"])
 
 with tab1:
-    if st.session_state.scan_result_v16 is not None:
-        df = st.session_state.scan_result_v16
+    if st.session_state.scan_result_v17 is not None:
+        df = st.session_state.scan_result_v17
         def style_rows(row):
             if "強力" in row['建議']: return ['background-color: #ffebee; color: #c62828; font-weight: bold']*len(row)
             return ['background-color: #f1f8e9; color: #33691e']*len(row)
@@ -215,13 +232,13 @@ with tab1:
         if strategy_mode == "🚀 短線噴射 (飆股)": cols.insert(6, "布林型態")
         display_df = df.copy(); display_df['訊號'] = display_df['訊號'].apply(lambda x: ", ".join(x))
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "總分", "乖離率"]), use_container_width=True, height=600)
-    else: st.info("👈 請點擊「執行掃描」查看符合策略的潛力股。")
+    else: st.info("👈 請點擊「執行全市場掃描」。")
 
 with tab2:
     c_search, c_or, c_sel = st.columns([3, 0.5, 3])
-    with c_search: search_ticker = st.text_input("🔍 輸入任意代號 (如 2330, 00878)", "")
+    with c_search: search_ticker = st.text_input("🔍 輸入任意代號 (如 2330)", "")
     with c_sel: 
-        opts = ["請選擇..."] + ((st.session_state.scan_result_v16['代號'] + " - " + st.session_state.scan_result_v16['名稱']).tolist() if st.session_state.scan_result_v16 is not None else [])
+        opts = ["請選擇..."] + ((st.session_state.scan_result_v17['代號'] + " - " + st.session_state.scan_result_v17['名稱']).tolist() if st.session_state.scan_result_v17 is not None else [])
         sel_opt = st.selectbox("或從結果選擇:", opts)
 
     target = None
@@ -229,17 +246,18 @@ with tab2:
     elif sel_opt != "請選擇...": target = sel_opt.split(" - ")[0]
 
     if target:
-        with st.spinner(f"正在強制分析 {target} (忽略策略濾網)..."):
-            data = analyze_stock_strategy(target, strategy_mode, bypass_filter=True) # 搜尋模式：強制分析
+        with st.spinner(f"正在強制分析 {target}..."):
+            # 搜尋模式下，pass strict_mode 但 bypass_filter=True，確保能看到數據
+            data = analyze_stock_strategy(target, strategy_mode, strict_mode, bypass_filter=True)
             if data:
                 if data['名稱'] == target: data['名稱'] = get_name_online(target)
                 fund_data = None; corr_data = (0, "N/A")
-                if "00" not in target[:2]: fund_data = get_advanced_fundamentals(target); corr_data = calculate_correlation(target)
+                if "00" not in target[:2]: 
+                    fund_data = get_advanced_fundamentals(target)
+                    corr_data = calculate_correlation(target)
 
                 st.markdown("---")
                 st.subheader(f"📊 {data['名稱']} ({target}) 12指標戰情牆")
-                
-                # 狀態提示
                 if data['狀態']: st.warning(f"💡 提示：此股票目前 {data['狀態']}，但我們已為您強制輸出分析報告。")
 
                 with st.container():
@@ -255,8 +273,7 @@ with tab2:
                     m2.markdown(f"<div class='indicator-box'>本益比 (P/E)<br><br><span style='font-size:1.5em'>{fund_data['本益比']}</span></div>", unsafe_allow_html=True)
                     m3.markdown(f"<div class='indicator-box'>股價淨值比<br><br><span style='font-size:1.5em'>{fund_data['股價淨值比']}</span></div>", unsafe_allow_html=True)
                     m4.markdown(f"<div class='indicator-box'>內部人持股<br><br><span style='font-size:1.5em'>{fund_data['內部人持股']}</span></div>", unsafe_allow_html=True)
-                else: st.warning("ETF 不適用基本面指標")
-
+                
                 st.markdown("")
                 t1, t2, t3, t4 = st.columns(4)
                 t1.markdown(f"<div class='indicator-box'>MACD 趨勢<br><br><span style='font-size:1.5em'>{data['MACD']}</span></div>", unsafe_allow_html=True)
@@ -286,4 +303,4 @@ with tab2:
                     """, unsafe_allow_html=True)
 
                 st.plotly_chart(plot_chart(data), use_container_width=True)
-            else: st.error("查無資料，請確認代號正確 (如 2330)。")
+            else: st.error("查無資料，請確認代號正確。")
