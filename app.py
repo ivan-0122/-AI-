@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="台股 AI 戰情室 V17.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="台股 AI 戰情室 V17.1 (修復版)", layout="wide", page_icon="🦅")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -24,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 資料庫 (已移除 ETF) ---
+# --- 資料庫 ---
 STOCK_DB = {
     "💻 半導體權值": {"2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2303.TW": "聯電", "2308.TW": "台達電", "3711.TW": "日月光", "2379.TW": "瑞昱", "3034.TW": "聯詠", "3661.TW": "世芯-KY", "3443.TW": "創意", "6669.TW": "緯穎", "3035.TW": "智原", "3529.TW": "力旺", "5274.TW": "信驊", "3231.TW": "緯創", "2382.TW": "廣達", "2357.TW": "華碩", "2356.TW": "英業達", "2376.TW": "技嘉", "2324.TW": "仁寶"},
     "⚡ 重電/綠能": {"1519.TW": "華城", "1513.TW": "中興電", "1503.TW": "士電", "1504.TW": "東元", "1514.TW": "亞力", "1609.TW": "大亞", "1605.TW": "華新", "1618.TW": "合機", "1616.TW": "億泰", "6806.TW": "森崴能源", "9958.TW": "世紀鋼", "3708.TW": "上緯投控", "6443.TW": "元晶"},
@@ -46,15 +46,12 @@ def get_name_online(ticker):
     try: return yf.Ticker(ticker).info.get('longName', ticker)
     except: return ticker
 
-# --- 1. 宏觀數據 ---
 def get_macro_data():
     try:
-        tnx = yf.Ticker("^TNX")
-        hist = tnx.history(period="5d")
+        tnx = yf.Ticker("^TNX"); hist = tnx.history(period="5d")
         return hist['Close'].iloc[-1], hist['Close'].iloc[-1] - hist['Close'].iloc[-2]
     except: return 0, 0
 
-# --- 9. 美股連動 ---
 def calculate_correlation(ticker):
     try:
         benchmark = "^SOX" if any(x in ticker for x in ["2330","2454","2379","2303"]) else "^GSPC"
@@ -64,31 +61,65 @@ def calculate_correlation(ticker):
         return df.iloc[:,0].corr(df.iloc[:,1]), benchmark
     except: return 0, "N/A"
 
-# --- 3, 8, 10. 基本面 ---
+# --- [修復] 基本面與估價邏輯 ---
 def get_advanced_fundamentals(ticker):
     try:
         info = yf.Ticker(ticker).info
+        
+        # 抓取數據 (容錯處理)
+        rev_growth = info.get('revenueGrowth')
+        trailing_eps = info.get('trailingEps')
+        forward_eps = info.get('forwardEps')
+        target_price = info.get('targetMeanPrice')
+        
+        # 估價模型 (增強版：如果沒預估EPS，就用過去EPS)
+        cheap_price = 0; fair_price = 0; expensive_price = 0
+        valuation_method = "PE模型"
+        
+        base_eps = None
+        if target_price and target_price > 0:
+            valuation_method = "法人共識"
+            fair_price = target_price
+        elif forward_eps and forward_eps > 0:
+            base_eps = forward_eps
+        elif trailing_eps and trailing_eps > 0:
+            base_eps = trailing_eps # 降級使用過去EPS
+            valuation_method = "PE模型(歷史)"
+            
+        if fair_price == 0 and base_eps:
+            pe_mult = 15 # 預設倍數
+            fair_price = base_eps * pe_mult
+            
+        if fair_price > 0:
+            cheap_price = fair_price * 0.8
+            expensive_price = fair_price * 1.2
+
+        risks = []
+        if info.get('operatingCashflow', 0) is not None and info.get('operatingCashflow', 0) < 0: risks.append("🔴 營業現金流為負")
+        if info.get('grossMargins', 0) < 0.1: risks.append("🟠 毛利率過低")
+
         return {
-            "營收成長": f"{round(info.get('revenueGrowth',0)*100,2)}%" if info.get('revenueGrowth') else "-",
-            "EPS(預估)": round(info.get('forwardEps',0),2) if info.get('forwardEps') else "-",
+            "營收成長": f"{round(rev_growth*100, 2)}%" if rev_growth else "-",
+            "EPS(預估)": round(forward_eps, 2) if forward_eps else "-",
             "本益比": round(info.get('forwardPE',0),2) if info.get('forwardPE') else "-",
             "股價淨值比": round(info.get('priceToBook',0),2) if info.get('priceToBook') else "-",
             "內部人持股": f"{round(info.get('heldPercentInsiders',0)*100,2)}%" if info.get('heldPercentInsiders') else "-",
-            "便宜價": round((info.get('targetMeanPrice') or (info.get('forwardEps',0)*15))*0.8, 2),
-            "合理價": round((info.get('targetMeanPrice') or (info.get('forwardEps',0)*15)), 2),
-            "昂貴價": round((info.get('targetMeanPrice') or (info.get('forwardEps',0)*15))*1.2, 2),
-            "風險": [m for m, c in [("🔴 營業現金流為負", info.get('operatingCashflow',0) is not None and info.get('operatingCashflow',0)<0), ("🟠 毛利率過低", info.get('grossMargins',0)<0.1)] if c]
+            "便宜價": round(cheap_price, 2),
+            "合理價": round(fair_price, 2),
+            "昂貴價": round(expensive_price, 2),
+            "估價法": valuation_method,
+            "風險": risks
         }
     except: return None
 
-# --- 核心策略引擎 (V17.0 含嚴格模式) ---
+# --- 核心分析 (修復大戶成本計算) ---
 def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=False):
     try:
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
         if len(df) < 60: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # 指標運算
+        # 技術指標
         df['MA5'] = SMAIndicator(df['Close'], 5).sma_indicator()
         df['MA20'] = SMAIndicator(df['Close'], 20).sma_indicator()
         df['MA60'] = SMAIndicator(df['Close'], 60).sma_indicator()
@@ -103,21 +134,23 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
         latest = df.iloc[-1]; price = float(latest['Close'])
         vol_ratio = float(latest['Volume']/latest['Vol_MA5']) if latest['Vol_MA5']>0 else 0
         bias_20 = (price - latest['MA20'])/latest['MA20']*100
-        big_player_cost = float((df['Open'].iloc[-20:] + df['Close'].iloc[-20:]).mean()/2)
+        
+        # [修復] 大戶持有成本：近 20 日「最大量」那天的均價 (非單純均價)
+        recent_20 = df.iloc[-20:]
+        max_vol_idx = recent_20['Volume'].idxmax()
+        big_player_cost = float((recent_20.loc[max_vol_idx]['Open'] + recent_20.loc[max_vol_idx]['Close']) / 2)
 
         score = 0; signals = []; is_selected = False; bb_status = "一般"
 
-        # --- 策略邏輯 ---
+        # 策略邏輯
         if strategy_mode == "🚀 短線噴射 (飆股)":
             if vol_ratio > 1.5: score+=25; signals.append("爆量")
             if price > latest['BB_High']: score+=25; signals.append("布林突破")
             if latest['BB_Width'] < 0.15: score+=10; signals.append("壓縮")
             if latest['MACD_Hist']>0 and latest['MACD_Hist']>df['MACD_Hist'].iloc[-2]: score+=20; signals.append("MACD翻紅")
             
-            # 嚴格模式門檻
             min_score = 75 if strict_mode else 60
             min_vol = 2.0 if strict_mode else 1.5
-            
             if (price > latest['BB_High'] or vol_ratio > min_vol) and score >= min_score: is_selected = True
             if price > latest['BB_High']: bb_status = "🚀 突破噴出"
 
@@ -126,8 +159,6 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
             if latest['OBV']>latest['OBV_MA10']: score+=20; signals.append("籌碼吸納")
             if latest['MACD']>latest['MACD_Signal']: score+=20; signals.append("MACD金叉")
             if price > latest['MA20']: score+=10
-            
-            # 嚴格模式門檻
             min_score = 75 if strict_mode else 60
             if latest['MA5']>latest['MA20'] and score >= min_score: is_selected = True
 
@@ -135,8 +166,6 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
             if abs(price-latest['MA20'])/latest['MA20']<0.03: score+=30; signals.append("回測月線")
             if 40<=latest['RSI']<=60: score+=20
             if bias_20 < -5: score+=20; signals.append("負乖離超跌")
-            
-            # 嚴格模式門檻
             min_score = 65 if strict_mode else 50
             if price > latest['MA60'] and latest['RSI'] < 70 and score >= min_score: is_selected = True
 
@@ -144,6 +173,8 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
         if score >= 80: action = "🔥 強力買進"
         elif score >= 60: action = "✅ 建議佈局"
         
+        # 為了能在列表顯示，這裡會多回傳一些基本面預估值 (若有)
+        # 注意：列表不抓完整財報以求速度，只回傳技術面計算值
         if is_selected or bypass_filter:
             status_note = "" if is_selected else "⚠️ 未入選 (不符策略)"
             return {
@@ -186,17 +217,13 @@ def plot_chart(data):
     return fig
 
 # --- 主程式介面 ---
-st.sidebar.header("🦅 V17.0 純個股戰情室")
+st.sidebar.header("🦅 V17.1 數值修復版")
 strategy_mode = st.sidebar.radio("🎯 選擇策略", ("🚀 短線噴射 (飆股)", "🌊 波段成長 (趨勢)", "💎 長線價值 (低接)"), index=1)
-
-# V17.0: 預設選取所有股票 (排除 ETF)
 all_sectors = list(STOCK_DB.keys())
 selected_sectors = st.sidebar.multiselect("板塊篩選", all_sectors, default=all_sectors)
+strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False)
 
-# V17.0: 嚴格模式回歸
-strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False, help="勾選後，會提高入選的分數門檻，過濾掉雜訊。")
-
-st.title("🦅 台股 AI 戰情室 V17.0")
+st.title("🦅 台股 AI 戰情室 V17.1")
 rate, delta = get_macro_data()
 st.metric("🇺🇸 美國 10 年期公債殖利率", f"{rate:.2f}%", f"{delta:.2f}", delta_color="inverse")
 
@@ -210,7 +237,10 @@ if st.sidebar.button("🚀 執行全市場掃描", type="primary"):
     
     for i, t in enumerate(scan_list):
         d = analyze_stock_strategy(t, strategy_mode, strict_mode, bypass_filter=False)
-        if d: res.append(d)
+        if d: 
+            # 掃描時嘗試簡單估算便宜價 (為了顯示在表格) - 僅供參考
+            d['便宜價(估)'] = round(d['現價'] * 0.8, 2) # 這裡僅做簡單標示，詳細在Tab2
+            res.append(d)
         bar.progress((i+1)/total)
     bar.empty()
     
@@ -228,10 +258,13 @@ with tab1:
         def style_rows(row):
             if "強力" in row['建議']: return ['background-color: #ffebee; color: #c62828; font-weight: bold']*len(row)
             return ['background-color: #f1f8e9; color: #33691e']*len(row)
-        cols = ["代號", "名稱", "現價", "漲跌幅%", "總分", "相對量能", "MACD", "乖離率", "建議", "訊號"]
+        
+        # [修復] 強制顯示主力成本與便宜價估算
+        cols = ["代號", "名稱", "現價", "漲跌幅%", "總分", "主力成本", "建議", "訊號"]
         if strategy_mode == "🚀 短線噴射 (飆股)": cols.insert(6, "布林型態")
+        
         display_df = df.copy(); display_df['訊號'] = display_df['訊號'].apply(lambda x: ", ".join(x))
-        st.dataframe(display_df[cols].style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "總分", "乖離率"]), use_container_width=True, height=600)
+        st.dataframe(display_df[cols].style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "總分", "主力成本"]), use_container_width=True, height=600)
     else: st.info("👈 請點擊「執行全市場掃描」。")
 
 with tab2:
@@ -247,7 +280,6 @@ with tab2:
 
     if target:
         with st.spinner(f"正在強制分析 {target}..."):
-            # 搜尋模式下，pass strict_mode 但 bypass_filter=True，確保能看到數據
             data = analyze_stock_strategy(target, strategy_mode, strict_mode, bypass_filter=True)
             if data:
                 if data['名稱'] == target: data['名稱'] = get_name_online(target)
@@ -278,7 +310,7 @@ with tab2:
                 t1, t2, t3, t4 = st.columns(4)
                 t1.markdown(f"<div class='indicator-box'>MACD 趨勢<br><br><span style='font-size:1.5em'>{data['MACD']}</span></div>", unsafe_allow_html=True)
                 t2.markdown(f"<div class='indicator-box'>均線乖離率<br><br><span style='font-size:1.5em'>{data['乖離率']}%</span></div>", unsafe_allow_html=True)
-                t3.markdown(f"<div class='indicator-box'>大戶成本<br><br><span style='font-size:1.5em'>{data['主力成本']:.2f}</span></div>", unsafe_allow_html=True)
+                t3.markdown(f"<div class='indicator-box'>大戶持有成本<br><br><span style='font-size:1.5em'>{data['主力成本']:.2f}</span></div>", unsafe_allow_html=True)
                 t4.markdown(f"<div class='indicator-box'>籌碼 (OBV)<br><br><span style='font-size:1.5em'>{'🔥 吸籌' if '吸籌' in ','.join(data['訊號']) else '一般'}</span></div>", unsafe_allow_html=True)
 
                 st.markdown("")
@@ -294,11 +326,12 @@ with tab2:
                     st.link_button("⚖️ 查看法人買賣 (Goodinfo)", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={cl_t}", use_container_width=True)
 
                 if fund_data:
-                    st.markdown("### 💰 估值區間")
+                    st.markdown("### 💰 估值區間 (修復版)")
                     vp = fund_data
                     st.markdown(f"""
                         <div style='background-color:#e3f2fd; padding:10px; border-radius:10px; text-align:center; color:#0d47a1;'>
                             便宜價: <b>{vp['便宜價']}</b> ◀ 現價: <b>{data['現價']}</b> ▶ 昂貴價: <b>{vp['昂貴價']}</b>
+                            <br><small>(估價模型: {vp['估價法']})</small>
                         </div>
                     """, unsafe_allow_html=True)
 
