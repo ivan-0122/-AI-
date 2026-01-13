@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests # 新增：爬蟲請求
+import requests
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volume import OnBalanceVolumeIndicator, MFIIndicator
@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="台股 AI 戰情室 V19.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="台股 AI 戰情室 V19.1", layout="wide", page_icon="🦅")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -60,60 +60,27 @@ def calculate_correlation(ticker):
         return df.iloc[:,0].corr(df.iloc[:,1]), benchmark
     except: return 0, "N/A"
 
-# --- V19.0 新增: 大戶籌碼爬蟲 (抓取 HiStock) ---
+# --- 大戶籌碼爬蟲 (HiStock) ---
 def get_chip_data_histock(ticker):
-    """
-    爬取 HiStock 網站的集保分佈資料，抓取400張與1000張大戶持股比例。
-    注意：這需要網路請求，速度較慢。
-    """
     clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
     url = f"https://histock.tw/stock/large.aspx?no={clean_ticker}"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
-        # 使用 Pandas 直接讀取網頁中的表格
         tables = pd.read_html(requests.get(url, headers=headers).text)
-        
-        # 通常 HiStock 的大戶持股表是網頁中的第一個或第二個表格
-        # 我們尋找包含 "週別" 和 "1000張以上" 的表格
         target_df = None
         for df in tables:
             if "週別" in df.columns.astype(str) or "日期" in df.columns.astype(str):
                 target_df = df
                 break
-        
         if target_df is not None and len(target_df) >= 2:
-            # 整理資料
-            # 假設表格欄位有: 期數, 日期, 1000張以上(%), 400張以上(%), ...
-            # 我們需要 mapping 正確的欄位名稱 (網站可能會變，這裡做模糊比對)
-            
             col_1000 = [c for c in target_df.columns if "1000" in str(c) and "%" in str(c)]
             col_400 = [c for c in target_df.columns if "400" in str(c) and "%" in str(c)]
-            
             if col_1000 and col_400:
-                latest = target_df.iloc[0] # 最新一週
-                prev = target_df.iloc[1]   # 上一週
-                
-                val_1000 = float(latest[col_1000[0]])
-                val_400 = float(latest[col_400[0]])
-                
-                diff_1000 = val_1000 - float(prev[col_1000[0]])
-                diff_400 = val_400 - float(prev[col_400[0]])
-                
-                return {
-                    "400張": val_400,
-                    "400張增減": diff_400,
-                    "1000張": val_1000,
-                    "1000張增減": diff_1000,
-                    "日期": latest[0] # 通常第一欄是日期
-                }
-    except Exception as e:
-        # st.error(f"爬取失敗: {e}") # Debug用
-        pass
-        
+                latest = target_df.iloc[0]; prev = target_df.iloc[1]
+                val_1000 = float(latest[col_1000[0]]); val_400 = float(latest[col_400[0]])
+                diff_1000 = val_1000 - float(prev[col_1000[0]]); diff_400 = val_400 - float(prev[col_400[0]])
+                return {"400張": val_400, "400張增減": diff_400, "1000張": val_1000, "1000張增減": diff_1000}
+    except: pass
     return None
 
 # --- 基本面分析 ---
@@ -124,6 +91,7 @@ def get_advanced_fundamentals(ticker):
         trailing_eps = info.get('trailingEps')
         forward_eps = info.get('forwardEps')
         target_price = info.get('targetMeanPrice')
+        inst_holder = info.get('heldPercentInstitutions')
         
         cheap_price = 0; fair_price = 0; expensive_price = 0
         valuation_method = "PE模型"
@@ -133,16 +101,13 @@ def get_advanced_fundamentals(ticker):
             fair_price = target_price
         elif forward_eps and forward_eps > 0: base_eps = forward_eps
         elif trailing_eps and trailing_eps > 0:
-            base_eps = trailing_eps
-            valuation_method = "PE模型(歷史)"
+            base_eps = trailing_eps; valuation_method = "PE模型(歷史)"
             
         if fair_price == 0 and base_eps:
-            pe_mult = 15
-            fair_price = base_eps * pe_mult
+            pe_mult = 15; fair_price = base_eps * pe_mult
             
         if fair_price > 0:
-            cheap_price = fair_price * 0.8
-            expensive_price = fair_price * 1.2
+            cheap_price = fair_price * 0.8; expensive_price = fair_price * 1.2
 
         risks = []
         if info.get('operatingCashflow', 0) is not None and info.get('operatingCashflow', 0) < 0: risks.append("🔴 營業現金流為負")
@@ -154,11 +119,8 @@ def get_advanced_fundamentals(ticker):
             "本益比": round(info.get('forwardPE',0),2) if info.get('forwardPE') else "-",
             "股價淨值比": round(info.get('priceToBook',0),2) if info.get('priceToBook') else "-",
             "內部人持股": f"{round(info.get('heldPercentInsiders',0)*100,2)}%" if info.get('heldPercentInsiders') else "-",
-            "便宜價": round(cheap_price, 2),
-            "合理價": round(fair_price, 2),
-            "昂貴價": round(expensive_price, 2),
-            "估價法": valuation_method,
-            "風險": risks
+            "便宜價": round(cheap_price, 2), "合理價": round(fair_price, 2), "昂貴價": round(expensive_price, 2),
+            "估價法": valuation_method, "風險": risks
         }
     except: return None
 
@@ -183,7 +145,6 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
         latest = df.iloc[-1]; price = float(latest['Close'])
         vol_ratio = float(latest['Volume']/latest['Vol_MA5']) if latest['Vol_MA5']>0 else 0
         bias_20 = (price - latest['MA20'])/latest['MA20']*100
-        
         recent_20 = df.iloc[-20:]
         max_vol_idx = recent_20['Volume'].idxmax()
         big_player_cost = float((recent_20.loc[max_vol_idx]['Open'] + recent_20.loc[max_vol_idx]['Close']) / 2)
@@ -219,7 +180,6 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
         if score >= 80: action = "🔥 強力買進"
         elif score >= 60: action = "✅ 建議佈局"
         
-        # 集保分佈表連結
         clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
         chip_link = f"https://goodinfo.tw/tw/EquityDistributionClassHis.asp?STOCK_ID={clean_ticker}"
 
@@ -266,13 +226,13 @@ def plot_chart(data):
     return fig
 
 # --- 主程式介面 ---
-st.sidebar.header("🦅 V19.0 大戶籌碼解鎖版")
+st.sidebar.header("🦅 V19.1 大戶籌碼解鎖版")
 strategy_mode = st.sidebar.radio("🎯 選擇策略", ("🚀 短線噴射 (飆股)", "🌊 波段成長 (趨勢)", "💎 長線價值 (低接)"), index=1)
 all_sectors = list(STOCK_DB.keys())
 selected_sectors = st.sidebar.multiselect("板塊篩選", all_sectors, default=all_sectors)
 strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False)
 
-st.title("🦅 台股 AI 戰情室 V19.0")
+st.title("🦅 台股 AI 戰情室 V19.1")
 rate, delta = get_macro_data()
 st.metric("🇺🇸 美國 10 年期公債殖利率", f"{rate:.2f}%", f"{delta:.2f}", delta_color="inverse")
 
@@ -283,13 +243,11 @@ if st.sidebar.button("🚀 執行全市場掃描", type="primary"):
     for sector in selected_sectors: scan_list.extend(list(STOCK_DB[sector].keys()))
     total = len(scan_list); bar = st.progress(0); res = []
     st.toast(f"掃描 {total} 檔個股中...", icon="🦅")
-    
     for i, t in enumerate(scan_list):
         d = analyze_stock_strategy(t, strategy_mode, strict_mode, bypass_filter=False)
         if d: res.append(d)
         bar.progress((i+1)/total)
     bar.empty()
-    
     if res:
         st.session_state.scan_result_v19 = pd.DataFrame(res).sort_values(by="總分", ascending=False)
         st.success(f"掃描完成！找到 {len(res)} 檔符合策略個股。")
@@ -304,18 +262,13 @@ with tab1:
         def style_rows(row):
             if "強力" in row['建議']: return ['background-color: #ffebee; color: #c62828; font-weight: bold']*len(row)
             return ['background-color: #f1f8e9; color: #33691e']*len(row)
-        
         cols = ["代號", "名稱", "現價", "漲跌幅%", "總分", "主力成本", "大戶籌碼", "建議", "訊號"]
         if strategy_mode == "🚀 短線噴射 (飆股)": cols.insert(6, "布林型態")
-        
         display_df = df.copy(); display_df['訊號'] = display_df['訊號'].apply(lambda x: ", ".join(x))
         st.dataframe(
             display_df[cols].style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "總分", "主力成本"]), 
-            use_container_width=True, 
-            height=600,
-            column_config={
-                "大戶籌碼": st.column_config.LinkColumn("集保籌碼", help="點擊查看Goodinfo籌碼分佈", display_text="查看增減")
-            }
+            use_container_width=True, height=600,
+            column_config={"大戶籌碼": st.column_config.LinkColumn("集保籌碼", help="點擊查看Goodinfo籌碼分佈", display_text="查看增減")}
         )
     else: st.info("👈 請點擊「執行全市場掃描」。")
 
@@ -336,11 +289,8 @@ with tab2:
             if data:
                 if data['名稱'] == target: data['名稱'] = get_name_online(target)
                 fund_data = None; corr_data = (0, "N/A"); chip_data = None
-                
                 if "00" not in target[:2]: 
-                    fund_data = get_advanced_fundamentals(target)
-                    corr_data = calculate_correlation(target)
-                    # V19: 嘗試爬取即時籌碼
+                    fund_data = get_advanced_fundamentals(target); corr_data = calculate_correlation(target)
                     chip_data = get_chip_data_histock(target)
 
                 st.markdown("---")
@@ -359,47 +309,42 @@ with tab2:
                     m1.markdown(f"<div class='indicator-box'>EPS / 營收<br><br><span style='font-size:1.5em'>{fund_data['EPS(預估)']} / {fund_data['營收成長']}</span></div>", unsafe_allow_html=True)
                     m2.markdown(f"<div class='indicator-box'>本益比 (P/E)<br><br><span style='font-size:1.5em'>{fund_data['本益比']}</span></div>", unsafe_allow_html=True)
                     m3.markdown(f"<div class='indicator-box'>股價淨值比<br><br><span style='font-size:1.5em'>{fund_data['股價淨值比']}</span></div>", unsafe_allow_html=True)
-                    # V19: 優先顯示 400 張大戶數據，若無則顯示內部人
                     if chip_data:
-                        val = chip_data['400張']
-                        diff = chip_data['400張增減']
+                        val = chip_data['400張']; diff = chip_data['400張增減']
                         color = "red" if diff > 0 else "green" if diff < 0 else "black"
                         symbol = "▲" if diff > 0 else "▼" if diff < 0 else ""
                         m4.markdown(f"<div class='chip-box'>👑 400張大戶<br><br><span style='font-size:1.5em; color:{color}'>{val}% {symbol}</span></div>", unsafe_allow_html=True)
-                    else:
-                        m4.markdown(f"<div class='indicator-box'>內部人持股<br><br><span style='font-size:1.5em'>{fund_data['內部人持股']}</span></div>", unsafe_allow_html=True)
+                    else: m4.markdown(f"<div class='indicator-box'>內部人持股<br><br><span style='font-size:1.5em'>{fund_data['內部人持股']}</span></div>", unsafe_allow_html=True)
                 
                 st.markdown("")
                 t1, t2, t3, t4 = st.columns(4)
                 t1.markdown(f"<div class='indicator-box'>MACD 趨勢<br><br><span style='font-size:1.5em'>{data['MACD']}</span></div>", unsafe_allow_html=True)
                 t2.markdown(f"<div class='indicator-box'>均線乖離率<br><br><span style='font-size:1.5em'>{data['乖離率']}%</span></div>", unsafe_allow_html=True)
                 t3.markdown(f"<div class='indicator-box'>大戶成本<br><br><span style='font-size:1.5em'>{data['主力成本']:.2f}</span></div>", unsafe_allow_html=True)
-                
-                # V19: 這裡顯示 1000 張大戶
                 if chip_data:
-                    val = chip_data['1000張']
-                    diff = chip_data['1000張增減']
+                    val = chip_data['1000張']; diff = chip_data['1000張增減']
                     color = "red" if diff > 0 else "green" if diff < 0 else "black"
                     symbol = "▲" if diff > 0 else "▼" if diff < 0 else ""
                     t4.markdown(f"<div class='chip-box'>👑 1000張大戶<br><br><span style='font-size:1.5em; color:{color}'>{val}% {symbol}</span></div>", unsafe_allow_html=True)
-                else:
-                    t4.markdown(f"<div class='indicator-box'>籌碼 (OBV)<br><br><span style='font-size:1.5em'>{'🔥 吸籌' if '吸籌' in ','.join(data['訊號']) else '一般'}</span></div>", unsafe_allow_html=True)
+                else: t4.markdown(f"<div class='indicator-box'>籌碼 (OBV)<br><br><span style='font-size:1.5em'>{'🔥 吸籌' if '吸籌' in ','.join(data['訊號']) else '一般'}</span></div>", unsafe_allow_html=True)
 
-                # ... (後續圖表與連結維持不變) ...
                 st.markdown("")
                 o1, o2, o3, o4 = st.columns(4)
                 o1.markdown(f"<div class='indicator-box'>美股連動 ({corr_data[1]})<br><br><span style='font-size:1.5em'>{corr_data[0]:.2f}</span></div>", unsafe_allow_html=True)
                 o2.markdown(f"<div class='indicator-box'>Fed 利率環境<br><br><span style='font-size:1.5em'>{rate:.2f}%</span></div>", unsafe_allow_html=True)
                 cl_t = target.replace(".TW", "").replace(".TWO", "")
-                with o3:
-                    st.markdown("<div class='indicator-box'>融資融券餘額</div>", unsafe_allow_html=True)
-                    st.link_button("📊 查看信用交易 (Yahoo)", f"https://tw.stock.yahoo.com/quote/{cl_t}/margin-trading", use_container_width=True)
-                with o4:
-                    st.markdown("<div class='indicator-box'>外資/投信動向</div>", unsafe_allow_html=True)
-                    st.link_button("⚖️ 查看法人買賣 (Goodinfo)", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={cl_t}", use_container_width=True)
+                with o3: st.link_button("📊 查看信用交易 (Yahoo)", f"https://tw.stock.yahoo.com/quote/{cl_t}/margin-trading", use_container_width=True)
+                with o4: st.link_button("⚖️ 查看法人買賣 (Goodinfo)", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={cl_t}", use_container_width=True)
 
                 if fund_data:
-                    st.markdown("### 💰 估值區間")
                     vp = fund_data
-                    st.markdown(f"""
-                        <div style='background-color:#e3f2fd; padding:
+                    valuation_html = f"""
+                        <div style='background-color:#e3f2fd; padding:10px; border-radius:10px; text-align:center; color:#0d47a1;'>
+                            便宜價: <b>{vp['便宜價']}</b> ◀ 現價: <b>{data['現價']}</b> ▶ 昂貴價: <b>{vp['昂貴價']}</b>
+                            <br><small>(估價模型: {vp['估價法']})</small>
+                        </div>
+                    """
+                    st.markdown(valuation_html, unsafe_allow_html=True)
+
+                st.plotly_chart(plot_chart(data), use_container_width=True)
+            else: st.error("查無資料，請確認代號正確。")
