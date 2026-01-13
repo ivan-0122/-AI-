@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests # 新增：爬蟲請求
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volume import OnBalanceVolumeIndicator, MFIIndicator
@@ -10,7 +11,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="台股 AI 戰情室 V18.0", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="台股 AI 戰情室 V19.0", layout="wide", page_icon="🦅")
 
 # --- CSS 優化 ---
 st.markdown("""
@@ -19,12 +20,12 @@ st.markdown("""
     .analysis-box { background-color: #e8f5e9; border-left: 5px solid #2e7d32; padding: 15px; margin-top: 10px; margin-bottom: 20px; border-radius: 5px; font-size: 1.05em; color: #1b5e20; }
     .warning-box { background-color: #ffebee; border-left: 5px solid #c62828; padding: 15px; margin-top: 10px; margin-bottom: 20px; border-radius: 5px; font-size: 1.05em; color: #b71c1c; }
     .indicator-box { background-color: #f3e5f5; border: 1px solid #ce93d8; padding: 10px; border-radius: 5px; text-align: center; color: #4a148c; font-weight: bold; font-size: 0.9em; height: 100%;}
-    .strategy-tag { background-color: #3f51b5; color: white; padding: 4px 12px; border-radius: 15px; font-weight: bold; font-size: 0.9em; display: inline-block; margin-bottom: 10px; }
+    .chip-box { background-color: #e0f7fa; border: 1px solid #4dd0e1; padding: 10px; border-radius: 5px; text-align: center; color: #006064; font-weight: bold; font-size: 0.9em; height: 100%;}
     .stDataFrame th { color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 資料庫 (維持 V17 規模) ---
+# --- 資料庫 ---
 STOCK_DB = {
     "💻 半導體權值": {"2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2303.TW": "聯電", "2308.TW": "台達電", "3711.TW": "日月光", "2379.TW": "瑞昱", "3034.TW": "聯詠", "3661.TW": "世芯-KY", "3443.TW": "創意", "6669.TW": "緯穎", "3035.TW": "智原", "3529.TW": "力旺", "5274.TW": "信驊", "3231.TW": "緯創", "2382.TW": "廣達", "2357.TW": "華碩", "2356.TW": "英業達", "2376.TW": "技嘉", "2324.TW": "仁寶"},
     "⚡ 重電/綠能": {"1519.TW": "華城", "1513.TW": "中興電", "1503.TW": "士電", "1504.TW": "東元", "1514.TW": "亞力", "1609.TW": "大亞", "1605.TW": "華新", "1618.TW": "合機", "1616.TW": "億泰", "6806.TW": "森崴能源", "9958.TW": "世紀鋼", "3708.TW": "上緯投控", "6443.TW": "元晶"},
@@ -37,9 +38,7 @@ STOCK_DB = {
 }
 FLAT_STOCK_DB = {ticker: name for sector, stocks in STOCK_DB.items() for ticker, name in stocks.items()}
 
-# --- 輔助函數 ---
 def get_stock_name(ticker): return FLAT_STOCK_DB.get(ticker, ticker.replace(".TW", ""))
-
 def get_name_online(ticker):
     name = FLAT_STOCK_DB.get(ticker)
     if name: return name
@@ -61,7 +60,63 @@ def calculate_correlation(ticker):
         return df.iloc[:,0].corr(df.iloc[:,1]), benchmark
     except: return 0, "N/A"
 
-# --- 基本面分析 (包含法人持股) ---
+# --- V19.0 新增: 大戶籌碼爬蟲 (抓取 HiStock) ---
+def get_chip_data_histock(ticker):
+    """
+    爬取 HiStock 網站的集保分佈資料，抓取400張與1000張大戶持股比例。
+    注意：這需要網路請求，速度較慢。
+    """
+    clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
+    url = f"https://histock.tw/stock/large.aspx?no={clean_ticker}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    try:
+        # 使用 Pandas 直接讀取網頁中的表格
+        tables = pd.read_html(requests.get(url, headers=headers).text)
+        
+        # 通常 HiStock 的大戶持股表是網頁中的第一個或第二個表格
+        # 我們尋找包含 "週別" 和 "1000張以上" 的表格
+        target_df = None
+        for df in tables:
+            if "週別" in df.columns.astype(str) or "日期" in df.columns.astype(str):
+                target_df = df
+                break
+        
+        if target_df is not None and len(target_df) >= 2:
+            # 整理資料
+            # 假設表格欄位有: 期數, 日期, 1000張以上(%), 400張以上(%), ...
+            # 我們需要 mapping 正確的欄位名稱 (網站可能會變，這裡做模糊比對)
+            
+            col_1000 = [c for c in target_df.columns if "1000" in str(c) and "%" in str(c)]
+            col_400 = [c for c in target_df.columns if "400" in str(c) and "%" in str(c)]
+            
+            if col_1000 and col_400:
+                latest = target_df.iloc[0] # 最新一週
+                prev = target_df.iloc[1]   # 上一週
+                
+                val_1000 = float(latest[col_1000[0]])
+                val_400 = float(latest[col_400[0]])
+                
+                diff_1000 = val_1000 - float(prev[col_1000[0]])
+                diff_400 = val_400 - float(prev[col_400[0]])
+                
+                return {
+                    "400張": val_400,
+                    "400張增減": diff_400,
+                    "1000張": val_1000,
+                    "1000張增減": diff_1000,
+                    "日期": latest[0] # 通常第一欄是日期
+                }
+    except Exception as e:
+        # st.error(f"爬取失敗: {e}") # Debug用
+        pass
+        
+    return None
+
+# --- 基本面分析 ---
 def get_advanced_fundamentals(ticker):
     try:
         info = yf.Ticker(ticker).info
@@ -70,18 +125,13 @@ def get_advanced_fundamentals(ticker):
         forward_eps = info.get('forwardEps')
         target_price = info.get('targetMeanPrice')
         
-        # 法人持股 (Proxy for 大戶)
-        inst_holder = info.get('heldPercentInstitutions') # 機構持股
-        
         cheap_price = 0; fair_price = 0; expensive_price = 0
         valuation_method = "PE模型"
-        
         base_eps = None
         if target_price and target_price > 0:
             valuation_method = "法人共識"
             fair_price = target_price
-        elif forward_eps and forward_eps > 0:
-            base_eps = forward_eps
+        elif forward_eps and forward_eps > 0: base_eps = forward_eps
         elif trailing_eps and trailing_eps > 0:
             base_eps = trailing_eps
             valuation_method = "PE模型(歷史)"
@@ -104,7 +154,6 @@ def get_advanced_fundamentals(ticker):
             "本益比": round(info.get('forwardPE',0),2) if info.get('forwardPE') else "-",
             "股價淨值比": round(info.get('priceToBook',0),2) if info.get('priceToBook') else "-",
             "內部人持股": f"{round(info.get('heldPercentInsiders',0)*100,2)}%" if info.get('heldPercentInsiders') else "-",
-            "法人持股": f"{round(inst_holder*100, 2)}%" if inst_holder else "-",
             "便宜價": round(cheap_price, 2),
             "合理價": round(fair_price, 2),
             "昂貴價": round(expensive_price, 2),
@@ -113,7 +162,7 @@ def get_advanced_fundamentals(ticker):
         }
     except: return None
 
-# --- 核心分析 (加入大戶籌碼連結生成) ---
+# --- 核心分析 ---
 def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=False):
     try:
         df = yf.download(ticker, period="6mo", interval="1d", progress=False)
@@ -170,9 +219,8 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
         if score >= 80: action = "🔥 強力買進"
         elif score >= 60: action = "✅ 建議佈局"
         
-        # 產生大戶籌碼連結 (Goodinfo)
-        clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
         # 集保分佈表連結
+        clean_ticker = ticker.replace(".TW", "").replace(".TWO", "")
         chip_link = f"https://goodinfo.tw/tw/EquityDistributionClassHis.asp?STOCK_ID={clean_ticker}"
 
         if is_selected or bypass_filter:
@@ -185,7 +233,7 @@ def analyze_stock_strategy(ticker, strategy_mode, strict_mode, bypass_filter=Fal
                 "MACD": "多頭" if latest['MACD'] > latest['MACD_Signal'] else "空頭",
                 "乖離率": round(bias_20, 2), "訊號": signals, "建議": action, "History": df, 
                 "主力成本": big_player_cost, "支撐價": float(latest['MA20']), "狀態": status_note,
-                "大戶籌碼": chip_link # V18 新增欄位
+                "大戶籌碼": chip_link
             }
         return None
     except: return None
@@ -218,17 +266,17 @@ def plot_chart(data):
     return fig
 
 # --- 主程式介面 ---
-st.sidebar.header("🦅 V18.0 籌碼連結增強版")
+st.sidebar.header("🦅 V19.0 大戶籌碼解鎖版")
 strategy_mode = st.sidebar.radio("🎯 選擇策略", ("🚀 短線噴射 (飆股)", "🌊 波段成長 (趨勢)", "💎 長線價值 (低接)"), index=1)
 all_sectors = list(STOCK_DB.keys())
 selected_sectors = st.sidebar.multiselect("板塊篩選", all_sectors, default=all_sectors)
 strict_mode = st.sidebar.checkbox("嚴格篩選模式", value=False)
 
-st.title("🦅 台股 AI 戰情室 V18.0")
+st.title("🦅 台股 AI 戰情室 V19.0")
 rate, delta = get_macro_data()
 st.metric("🇺🇸 美國 10 年期公債殖利率", f"{rate:.2f}%", f"{delta:.2f}", delta_color="inverse")
 
-if 'scan_result_v18' not in st.session_state: st.session_state.scan_result_v18 = None
+if 'scan_result_v19' not in st.session_state: st.session_state.scan_result_v19 = None
 
 if st.sidebar.button("🚀 執行全市場掃描", type="primary"):
     scan_list = []
@@ -243,16 +291,16 @@ if st.sidebar.button("🚀 執行全市場掃描", type="primary"):
     bar.empty()
     
     if res:
-        st.session_state.scan_result_v18 = pd.DataFrame(res).sort_values(by="總分", ascending=False)
+        st.session_state.scan_result_v19 = pd.DataFrame(res).sort_values(by="總分", ascending=False)
         st.success(f"掃描完成！找到 {len(res)} 檔符合策略個股。")
     else: st.warning("無符合標的，請嘗試關閉嚴格模式。")
 
 # --- Tabs ---
-tab1, tab2 = st.tabs(["📋 篩選結果 (含大戶連結)", "🔍 12大指標深度透視"])
+tab1, tab2 = st.tabs(["📋 篩選結果", "🔍 12大指標深度透視"])
 
 with tab1:
-    if st.session_state.scan_result_v18 is not None:
-        df = st.session_state.scan_result_v18
+    if st.session_state.scan_result_v19 is not None:
+        df = st.session_state.scan_result_v19
         def style_rows(row):
             if "強力" in row['建議']: return ['background-color: #ffebee; color: #c62828; font-weight: bold']*len(row)
             return ['background-color: #f1f8e9; color: #33691e']*len(row)
@@ -261,18 +309,12 @@ with tab1:
         if strategy_mode == "🚀 短線噴射 (飆股)": cols.insert(6, "布林型態")
         
         display_df = df.copy(); display_df['訊號'] = display_df['訊號'].apply(lambda x: ", ".join(x))
-        
-        # V18 新增：將 "大戶籌碼" 設為連結欄位
         st.dataframe(
             display_df[cols].style.apply(style_rows, axis=1).format("{:.2f}", subset=["現價", "漲跌幅%", "總分", "主力成本"]), 
             use_container_width=True, 
             height=600,
             column_config={
-                "大戶籌碼": st.column_config.LinkColumn(
-                    "大戶籌碼 (週)", 
-                    help="點擊查看集保股權分散表 (500張以上大戶增減)", 
-                    display_text="查看增減"
-                )
+                "大戶籌碼": st.column_config.LinkColumn("集保籌碼", help="點擊查看Goodinfo籌碼分佈", display_text="查看增減")
             }
         )
     else: st.info("👈 請點擊「執行全市場掃描」。")
@@ -281,7 +323,7 @@ with tab2:
     c_search, c_or, c_sel = st.columns([3, 0.5, 3])
     with c_search: search_ticker = st.text_input("🔍 輸入任意代號 (如 2330)", "")
     with c_sel: 
-        opts = ["請選擇..."] + ((st.session_state.scan_result_v18['代號'] + " - " + st.session_state.scan_result_v18['名稱']).tolist() if st.session_state.scan_result_v18 is not None else [])
+        opts = ["請選擇..."] + ((st.session_state.scan_result_v19['代號'] + " - " + st.session_state.scan_result_v19['名稱']).tolist() if st.session_state.scan_result_v19 is not None else [])
         sel_opt = st.selectbox("或從結果選擇:", opts)
 
     target = None
@@ -289,62 +331,10 @@ with tab2:
     elif sel_opt != "請選擇...": target = sel_opt.split(" - ")[0]
 
     if target:
-        with st.spinner(f"正在強制分析 {target}..."):
+        with st.spinner(f"正在分析 {target} 並爬取大戶籌碼..."):
             data = analyze_stock_strategy(target, strategy_mode, strict_mode, bypass_filter=True)
             if data:
                 if data['名稱'] == target: data['名稱'] = get_name_online(target)
-                fund_data = None; corr_data = (0, "N/A")
-                if "00" not in target[:2]: 
-                    fund_data = get_advanced_fundamentals(target)
-                    corr_data = calculate_correlation(target)
-
-                st.markdown("---")
-                st.subheader(f"📊 {data['名稱']} ({target}) 12指標戰情牆")
-                if data['狀態']: st.warning(f"💡 提示：此股票目前 {data['狀態']}，但我們已為您強制輸出分析報告。")
-
-                with st.container():
-                    g1, g2, g3 = st.columns(3)
-                    with g1: st.plotly_chart(plot_gauge(data['總分'], f"{strategy_mode} 評分"), use_container_width=True)
-                    with g2: st.plotly_chart(plot_gauge(data['RSI'], "RSI 動能"), use_container_width=True)
-                    with g3: st.plotly_chart(plot_gauge(data['MFI'], "MFI 資金流"), use_container_width=True)
-
-                st.markdown("### 🦅 12 大關鍵指標透視")
-                m1, m2, m3, m4 = st.columns(4)
-                if fund_data:
-                    m1.markdown(f"<div class='indicator-box'>EPS / 營收<br><br><span style='font-size:1.5em'>{fund_data['EPS(預估)']} / {fund_data['營收成長']}</span></div>", unsafe_allow_html=True)
-                    m2.markdown(f"<div class='indicator-box'>本益比 (P/E)<br><br><span style='font-size:1.5em'>{fund_data['本益比']}</span></div>", unsafe_allow_html=True)
-                    m3.markdown(f"<div class='indicator-box'>股價淨值比<br><br><span style='font-size:1.5em'>{fund_data['股價淨值比']}</span></div>", unsafe_allow_html=True)
-                    # V18 新增：法人持股顯示在個股透視
-                    m4.markdown(f"<div class='indicator-box'>法人持股<br><br><span style='font-size:1.5em'>{fund_data['法人持股']}</span></div>", unsafe_allow_html=True)
+                fund_data = None; corr_data = (0, "N/A"); chip_data = None
                 
-                st.markdown("")
-                t1, t2, t3, t4 = st.columns(4)
-                t1.markdown(f"<div class='indicator-box'>MACD 趨勢<br><br><span style='font-size:1.5em'>{data['MACD']}</span></div>", unsafe_allow_html=True)
-                t2.markdown(f"<div class='indicator-box'>均線乖離率<br><br><span style='font-size:1.5em'>{data['乖離率']}%</span></div>", unsafe_allow_html=True)
-                t3.markdown(f"<div class='indicator-box'>大戶成本<br><br><span style='font-size:1.5em'>{data['主力成本']:.2f}</span></div>", unsafe_allow_html=True)
-                t4.markdown(f"<div class='indicator-box'>籌碼 (OBV)<br><br><span style='font-size:1.5em'>{'🔥 吸籌' if '吸籌' in ','.join(data['訊號']) else '一般'}</span></div>", unsafe_allow_html=True)
-
-                st.markdown("")
-                o1, o2, o3, o4 = st.columns(4)
-                o1.markdown(f"<div class='indicator-box'>美股連動 ({corr_data[1]})<br><br><span style='font-size:1.5em'>{corr_data[0]:.2f}</span></div>", unsafe_allow_html=True)
-                o2.markdown(f"<div class='indicator-box'>Fed 利率環境<br><br><span style='font-size:1.5em'>{rate:.2f}%</span></div>", unsafe_allow_html=True)
-                cl_t = target.replace(".TW", "").replace(".TWO", "")
-                with o3:
-                    st.markdown("<div class='indicator-box'>融資融券餘額</div>", unsafe_allow_html=True)
-                    st.link_button("📊 查看信用交易 (Yahoo)", f"https://tw.stock.yahoo.com/quote/{cl_t}/margin-trading", use_container_width=True)
-                with o4:
-                    st.markdown("<div class='indicator-box'>外資/投信動向</div>", unsafe_allow_html=True)
-                    st.link_button("⚖️ 查看法人買賣 (Goodinfo)", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={cl_t}", use_container_width=True)
-
-                if fund_data:
-                    st.markdown("### 💰 估值區間 (修復版)")
-                    vp = fund_data
-                    st.markdown(f"""
-                        <div style='background-color:#e3f2fd; padding:10px; border-radius:10px; text-align:center; color:#0d47a1;'>
-                            便宜價: <b>{vp['便宜價']}</b> ◀ 現價: <b>{data['現價']}</b> ▶ 昂貴價: <b>{vp['昂貴價']}</b>
-                            <br><small>(估價模型: {vp['估價法']})</small>
-                        </div>
-                    """, unsafe_allow_html=True)
-
-                st.plotly_chart(plot_chart(data), use_container_width=True)
-            else: st.error("查無資料，請確認代號正確。")
+                if "00" not in target[:2]:
