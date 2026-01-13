@@ -337,4 +337,69 @@ with tab2:
                 if data['名稱'] == target: data['名稱'] = get_name_online(target)
                 fund_data = None; corr_data = (0, "N/A"); chip_data = None
                 
-                if "00" not in target[:2]:
+                if "00" not in target[:2]: 
+                    fund_data = get_advanced_fundamentals(target)
+                    corr_data = calculate_correlation(target)
+                    # V19: 嘗試爬取即時籌碼
+                    chip_data = get_chip_data_histock(target)
+
+                st.markdown("---")
+                st.subheader(f"📊 {data['名稱']} ({target}) 12指標戰情牆")
+                if data['狀態']: st.warning(f"💡 提示：此股票目前 {data['狀態']}，但我們已為您強制輸出分析報告。")
+
+                with st.container():
+                    g1, g2, g3 = st.columns(3)
+                    with g1: st.plotly_chart(plot_gauge(data['總分'], f"{strategy_mode} 評分"), use_container_width=True)
+                    with g2: st.plotly_chart(plot_gauge(data['RSI'], "RSI 動能"), use_container_width=True)
+                    with g3: st.plotly_chart(plot_gauge(data['MFI'], "MFI 資金流"), use_container_width=True)
+
+                st.markdown("### 🦅 12 大關鍵指標透視")
+                m1, m2, m3, m4 = st.columns(4)
+                if fund_data:
+                    m1.markdown(f"<div class='indicator-box'>EPS / 營收<br><br><span style='font-size:1.5em'>{fund_data['EPS(預估)']} / {fund_data['營收成長']}</span></div>", unsafe_allow_html=True)
+                    m2.markdown(f"<div class='indicator-box'>本益比 (P/E)<br><br><span style='font-size:1.5em'>{fund_data['本益比']}</span></div>", unsafe_allow_html=True)
+                    m3.markdown(f"<div class='indicator-box'>股價淨值比<br><br><span style='font-size:1.5em'>{fund_data['股價淨值比']}</span></div>", unsafe_allow_html=True)
+                    # V19: 優先顯示 400 張大戶數據，若無則顯示內部人
+                    if chip_data:
+                        val = chip_data['400張']
+                        diff = chip_data['400張增減']
+                        color = "red" if diff > 0 else "green" if diff < 0 else "black"
+                        symbol = "▲" if diff > 0 else "▼" if diff < 0 else ""
+                        m4.markdown(f"<div class='chip-box'>👑 400張大戶<br><br><span style='font-size:1.5em; color:{color}'>{val}% {symbol}</span></div>", unsafe_allow_html=True)
+                    else:
+                        m4.markdown(f"<div class='indicator-box'>內部人持股<br><br><span style='font-size:1.5em'>{fund_data['內部人持股']}</span></div>", unsafe_allow_html=True)
+                
+                st.markdown("")
+                t1, t2, t3, t4 = st.columns(4)
+                t1.markdown(f"<div class='indicator-box'>MACD 趨勢<br><br><span style='font-size:1.5em'>{data['MACD']}</span></div>", unsafe_allow_html=True)
+                t2.markdown(f"<div class='indicator-box'>均線乖離率<br><br><span style='font-size:1.5em'>{data['乖離率']}%</span></div>", unsafe_allow_html=True)
+                t3.markdown(f"<div class='indicator-box'>大戶成本<br><br><span style='font-size:1.5em'>{data['主力成本']:.2f}</span></div>", unsafe_allow_html=True)
+                
+                # V19: 這裡顯示 1000 張大戶
+                if chip_data:
+                    val = chip_data['1000張']
+                    diff = chip_data['1000張增減']
+                    color = "red" if diff > 0 else "green" if diff < 0 else "black"
+                    symbol = "▲" if diff > 0 else "▼" if diff < 0 else ""
+                    t4.markdown(f"<div class='chip-box'>👑 1000張大戶<br><br><span style='font-size:1.5em; color:{color}'>{val}% {symbol}</span></div>", unsafe_allow_html=True)
+                else:
+                    t4.markdown(f"<div class='indicator-box'>籌碼 (OBV)<br><br><span style='font-size:1.5em'>{'🔥 吸籌' if '吸籌' in ','.join(data['訊號']) else '一般'}</span></div>", unsafe_allow_html=True)
+
+                # ... (後續圖表與連結維持不變) ...
+                st.markdown("")
+                o1, o2, o3, o4 = st.columns(4)
+                o1.markdown(f"<div class='indicator-box'>美股連動 ({corr_data[1]})<br><br><span style='font-size:1.5em'>{corr_data[0]:.2f}</span></div>", unsafe_allow_html=True)
+                o2.markdown(f"<div class='indicator-box'>Fed 利率環境<br><br><span style='font-size:1.5em'>{rate:.2f}%</span></div>", unsafe_allow_html=True)
+                cl_t = target.replace(".TW", "").replace(".TWO", "")
+                with o3:
+                    st.markdown("<div class='indicator-box'>融資融券餘額</div>", unsafe_allow_html=True)
+                    st.link_button("📊 查看信用交易 (Yahoo)", f"https://tw.stock.yahoo.com/quote/{cl_t}/margin-trading", use_container_width=True)
+                with o4:
+                    st.markdown("<div class='indicator-box'>外資/投信動向</div>", unsafe_allow_html=True)
+                    st.link_button("⚖️ 查看法人買賣 (Goodinfo)", f"https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID={cl_t}", use_container_width=True)
+
+                if fund_data:
+                    st.markdown("### 💰 估值區間")
+                    vp = fund_data
+                    st.markdown(f"""
+                        <div style='background-color:#e3f2fd; padding:
